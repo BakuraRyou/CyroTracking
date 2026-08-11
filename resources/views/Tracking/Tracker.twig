@@ -291,6 +291,25 @@
     }
 
     function onConsent(callback) {
+        var retryTimer = null;
+        var retryAttempt = 0;
+
+        function initializeWhenConsentIsAvailable() {
+            retryTimer = null;
+
+            if (hasAnyTrackingConsent()) {
+                retryAttempt = 0;
+                updateGoogleConsentMode();
+                callback();
+                return;
+            }
+
+            if (retryAttempt < 20) {
+                retryAttempt++;
+                retryTimer = setTimeout(initializeWhenConsentIsAvailable, 50);
+            }
+        }
+
         if (hasAnyTrackingConsent()) {
             updateGoogleConsentMode();
             callback();
@@ -300,9 +319,10 @@
         log("waiting for consent", config.googleAnalyticsConsentKey, config.matomoConsentKey, config.marketingConsentKey);
 
         document.addEventListener("consent-change", function() {
-            if (hasAnyTrackingConsent()) {
-                updateGoogleConsentMode();
-                callback();
+            retryAttempt = 0;
+
+            if (retryTimer === null) {
+                retryTimer = setTimeout(initializeWhenConsentIsAvailable, 0);
             }
         });
     }
