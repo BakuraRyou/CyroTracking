@@ -293,14 +293,59 @@
     function onConsent(callback) {
         var retryTimer = null;
         var retryAttempt = 0;
+        var consentPollTimer = null;
+        var responseDetectedAt = 0;
+        var lastActivatedConsent = "";
+
+        function getTrackingConsentSignature() {
+            return [
+                hasGoogleAnalyticsConsent() ? "1" : "0",
+                hasMatomoConsent() ? "1" : "0",
+                hasMarketingConsent() ? "1" : "0"
+            ].join("");
+        }
+
+        function activateAvailableTracking() {
+            var consentSignature = getTrackingConsentSignature();
+
+            if (consentSignature === "000") {
+                return false;
+            }
+
+            if (consentSignature !== lastActivatedConsent) {
+                lastActivatedConsent = consentSignature;
+                updateGoogleConsentMode();
+                callback();
+            }
+
+            return true;
+        }
+
+        function consentManagerHasResponse() {
+            try {
+                return !!(
+                    window.ConsentManager &&
+                    window.ConsentManager.hasResponse &&
+                    window.ConsentManager.hasResponse()
+                );
+            } catch (error) {
+                return false;
+            }
+        }
+
+        function stopConsentPolling() {
+            if (consentPollTimer !== null) {
+                clearInterval(consentPollTimer);
+                consentPollTimer = null;
+            }
+        }
 
         function initializeWhenConsentIsAvailable() {
             retryTimer = null;
 
-            if (hasAnyTrackingConsent()) {
+            if (activateAvailableTracking()) {
                 retryAttempt = 0;
-                updateGoogleConsentMode();
-                callback();
+                stopConsentPolling();
                 return;
             }
 
@@ -310,21 +355,40 @@
             }
         }
 
-        if (hasAnyTrackingConsent()) {
-            updateGoogleConsentMode();
-            callback();
+        function handleConsentChange() {
+            retryAttempt = 0;
+            responseDetectedAt = 0;
+
+            if (retryTimer === null) {
+                retryTimer = setTimeout(initializeWhenConsentIsAvailable, 0);
+            }
+        }
+
+        document.addEventListener("consent-change", handleConsentChange);
+        window.addEventListener("consent-change", handleConsentChange);
+
+        if (activateAvailableTracking()) {
             return;
         }
 
         log("waiting for consent", config.googleAnalyticsConsentKey, config.matomoConsentKey, config.marketingConsentKey);
 
-        document.addEventListener("consent-change", function() {
-            retryAttempt = 0;
-
-            if (retryTimer === null) {
-                retryTimer = setTimeout(initializeWhenConsentIsAvailable, 0);
+        consentPollTimer = setInterval(function() {
+            if (activateAvailableTracking()) {
+                stopConsentPolling();
+                return;
             }
-        });
+
+            if (consentManagerHasResponse()) {
+                responseDetectedAt = responseDetectedAt || Date.now();
+
+                if (Date.now() - responseDetectedAt >= 2000) {
+                    stopConsentPolling();
+                }
+            } else {
+                responseDetectedAt = 0;
+            }
+        }, 250);
     }
 
     function eventId(name) {
