@@ -1,0 +1,23 @@
+{
+    "name"              : "CyroTracking",
+    "namespace"         : "CyroTracking",
+    "type"              : "general",
+    "version"           : "1.0.0",
+    "description"       : "Consent-aware GA4, Matomo and Meta Pixel tracking for plentyShop LTS.",
+    "author"            : "Cyroline",
+    "serviceProvider"   : "CyroTracking\\Providers\\CyroTrackingServiceProvider",
+    "require"           : {
+        "Ceres": ">=5.0.0",
+        "IO": ">=5.0.0"
+    },
+    "dataProviders"     : [
+        {
+            "key"         : "CyroTracking\\Containers\\CyroTrackingContainer",
+            "name"        : "CyroTracking tracker",
+            "description" : "Loads the consent-aware Google Analytics, Matomo and Meta Pixel tracker."
+        }
+    ],
+    "platform"          : {
+        "php": ">=7.3 <8.1"
+    }
+}

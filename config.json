@@ -1,0 +1,114 @@
+{
+    "formatVersion": 1,
+    "menu": {
+        "Config.TrackingTab": {
+            "label": "Tracking",
+            "formFields": {
+                "enabled": {
+                    "type": "checkBox",
+                    "required": false,
+                    "label": "Enable tracking",
+                    "options": {
+                        "defaultValue": "true"
+                    }
+                },
+                "ga4_measurement_id": {
+                    "type": "inputText",
+                    "required": false,
+                    "label": "GA4 measurement ID",
+                    "options": {
+                        "defaultValue": "G-06YJCF5DWB"
+                    }
+                },
+                "matomo_site_url": {
+                    "type": "inputText",
+                    "required": false,
+                    "label": "Matomo site URL",
+                    "options": {
+                        "defaultValue": ""
+                    }
+                },
+                "matomo_site_id": {
+                    "type": "inputText",
+                    "required": false,
+                    "label": "Matomo site ID",
+                    "options": {
+                        "defaultValue": ""
+                    }
+                },
+                "matomo_enable_link_tracking": {
+                    "type": "checkBox",
+                    "required": false,
+                    "label": "Enable Matomo link tracking",
+                    "options": {
+                        "defaultValue": "true"
+                    }
+                },
+                "meta_pixel_id": {
+                    "type": "inputText",
+                    "required": false,
+                    "label": "Meta Pixel ID",
+                    "options": {
+                        "defaultValue": ""
+                    }
+                },
+                "meta_graph_api_version": {
+                    "type": "inputText",
+                    "required": false,
+                    "label": "Meta Graph API version",
+                    "options": {
+                        "defaultValue": "v20.0"
+                    }
+                },
+                "meta_access_token": {
+                    "type": "inputText",
+                    "required": false,
+                    "label": "Meta Conversions API access token",
+                    "options": {
+                        "defaultValue": ""
+                    }
+                },
+                "meta_test_event_code": {
+                    "type": "inputText",
+                    "required": false,
+                    "label": "Meta test event code",
+                    "options": {
+                        "defaultValue": ""
+                    }
+                },
+                "send_meta_browser_events": {
+                    "type": "checkBox",
+                    "required": false,
+                    "label": "Send Meta browser pixel events",
+                    "options": {
+                        "defaultValue": "true"
+                    }
+                },
+                "send_meta_server_events": {
+                    "type": "checkBox",
+                    "required": false,
+                    "label": "Send Meta server events",
+                    "options": {
+                        "defaultValue": "true"
+                    }
+                },
+                "send_meta_hashed_customer_data": {
+                    "type": "checkBox",
+                    "required": false,
+                    "label": "Send hashed customer identifiers to Meta CAPI",
+                    "options": {
+                        "defaultValue": "true"
+                    }
+                },
+                "debug": {
+                    "type": "checkBox",
+                    "required": false,
+                    "label": "Debug logging",
+                    "options": {
+                        "defaultValue": "false"
+                    }
+                }
+            }
+        }
+    }
+}

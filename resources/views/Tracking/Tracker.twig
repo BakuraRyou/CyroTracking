@@ -1,0 +1,1417 @@
+{% set enabled = config('CyroTracking.enabled') %}
+{% set ga4Id = config('CyroTracking.ga4_measurement_id') %}
+{% set matomoUrl = config('CyroTracking.matomo_site_url') %}
+{% set matomoSiteId = config('CyroTracking.matomo_site_id') %}
+{% set matomoEnableLinkTracking = config('CyroTracking.matomo_enable_link_tracking') %}
+{% set metaPixelId = config('CyroTracking.meta_pixel_id') %}
+{% set sendMetaBrowser = config('CyroTracking.send_meta_browser_events') %}
+{% set sendMetaServer = config('CyroTracking.send_meta_server_events') %}
+{% set sendMetaHashedCustomerData = config('CyroTracking.send_meta_hashed_customer_data') %}
+{% set debug = config('CyroTracking.debug') %}
+{% set activeCurrencyCode = services.checkout.getCurrencyData().name | default('EUR') %}
+{% set orderTrackingData = null %}
+
+{% if enabled is null or enabled == '' %}
+    {% set enabled = 'true' %}
+{% endif %}
+
+{% if sendMetaBrowser is null or sendMetaBrowser == '' %}
+    {% set sendMetaBrowser = 'true' %}
+{% endif %}
+
+{% if sendMetaServer is null or sendMetaServer == '' %}
+    {% set sendMetaServer = 'true' %}
+{% endif %}
+
+{% if sendMetaHashedCustomerData is null or sendMetaHashedCustomerData == '' %}
+    {% set sendMetaHashedCustomerData = 'true' %}
+{% endif %}
+
+{% if matomoEnableLinkTracking is null or matomoEnableLinkTracking == '' %}
+    {% set matomoEnableLinkTracking = 'true' %}
+{% endif %}
+
+{% if data is defined and data.order is defined %}
+    {% set orderItems = [] %}
+    {% set orderContactId = '' %}
+    {% for item in data.order.orderItems | default([]) %}
+        {% if item.itemVariationId is defined and item.itemVariationId > 0 and not services.order.containsComponentPrefix(item.orderItemName) %}
+            {% set itemAmount = item.amounts[0] %}
+            {% for amount in item.amounts if amount.isSystemCurrency is defined and not amount.isSystemCurrency %}
+                {% set itemAmount = amount %}
+            {% endfor %}
+            {% set orderItems = orderItems | merge([{
+                item_id: item.itemVariationId,
+                item_name: item.orderItemName,
+                quantity: item.quantity,
+                price: itemAmount.priceGross | default(itemAmount.priceNet | default(0))
+            }]) %}
+        {% endif %}
+    {% endfor %}
+    {% for relation in data.order.relations | default([]) %}
+        {% if relation.referenceType == 'contact' %}
+            {% set orderContactId = relation.referenceId %}
+        {% endif %}
+    {% endfor %}
+    {% set orderTrackingData = {
+        order_id: data.order.id,
+        currency: data.totals.currency | default('EUR'),
+        value: data.totals.totalGross | default(data.totals.totalNet | default(0)),
+        items: orderItems,
+        customer: {
+            email: data.order.billingAddress.email | default(''),
+            phone: data.order.billingAddress.telephone | default(''),
+            first_name: data.order.billingAddress.name2 | default(''),
+            last_name: data.order.billingAddress.name3 | default(''),
+            external_id: orderContactId
+        }
+    } %}
+{% endif %}
+
+<!-- CyroTracking container rendered -->
+{% if enabled is same as(true) or enabled == 'true' or enabled == '1' %}
+<script>
+(function(window, document) {
+    "use strict";
+
+    if (window.CyroTrackingLoaded) {
+        return;
+    }
+
+    window.CyroTrackingLoaded = true;
+
+    var config = {
+        googleAnalyticsConsentKey: "tracking.cyroAnalytics",
+        matomoConsentKey: "tracking.cyroMatomo",
+        marketingConsentKey: "marketing.cyroMarketing",
+        ga4Id: {{ ga4Id | default('') | json_encode | raw }},
+        matomoUrl: {{ matomoUrl | default('') | json_encode | raw }},
+        matomoSiteId: {{ matomoSiteId | default('') | json_encode | raw }},
+        matomoEnableLinkTracking: {{ (matomoEnableLinkTracking is same as(false) or matomoEnableLinkTracking == 'false' or matomoEnableLinkTracking == '0') ? 'false' : 'true' }},
+        metaPixelId: {{ metaPixelId | default('') | json_encode | raw }},
+        sendMetaBrowser: {{ (sendMetaBrowser is same as(false) or sendMetaBrowser == 'false' or sendMetaBrowser == '0') ? 'false' : 'true' }},
+        sendMetaServer: {{ (sendMetaServer is same as(false) or sendMetaServer == 'false' or sendMetaServer == '0') ? 'false' : 'true' }},
+        sendMetaHashedCustomerData: {{ (sendMetaHashedCustomerData is same as(false) or sendMetaHashedCustomerData == 'false' or sendMetaHashedCustomerData == '0') ? 'false' : 'true' }},
+        debug: {{ (debug is same as(true) or debug == 'true' or debug == '1') ? 'true' : 'false' }},
+        serverEndpoint: "/cyro-tracking/meta",
+        currency: {{ activeCurrencyCode | default('EUR') | json_encode | raw }},
+        order: {{ orderTrackingData | json_encode | raw }}
+    };
+
+    window.dataLayer = window.dataLayer || [];
+
+    var state = {
+        initialized: false,
+        googleInitialized: false,
+        googleConsentModeInitialized: false,
+        matomoInitialized: false,
+        metaInitialized: false,
+        consentRevalidationPending: false,
+        pageViewSent: false,
+        viewItemSent: false,
+        checkoutSent: false,
+        purchaseKeys: {},
+        lastCartSignature: "",
+        lastSearch: "",
+        lastAddToCartAt: 0,
+        attribution: {}
+    };
+
+    config.ga4Id = normalizeTrackingId(config.ga4Id);
+    config.matomoUrl = normalizeMatomoUrl(config.matomoUrl);
+    config.matomoSiteId = normalizeMatomoSiteId(config.matomoSiteId);
+    config.metaPixelId = normalizeTrackingId(config.metaPixelId);
+
+    var consentMigrationVersion = "2026-07-cyro-tracking-v3";
+    var consentMigrationStorageKey = "cyro_tracking_consent_migration";
+    var attributionStorageKey = "cyro_tracking_attribution";
+    var attributionStorageTtlMs = 30 * 60 * 1000;
+    var attributionParams = [
+        "utm_source",
+        "utm_medium",
+        "utm_campaign",
+        "utm_id",
+        "utm_content",
+        "utm_term",
+        "gclid",
+        "fbclid",
+        "msclkid"
+    ];
+
+    function log() {
+        if (config.debug && window.console) {
+            window.console.log.apply(window.console, ["[CyroTracking]"].concat([].slice.call(arguments)));
+        }
+    }
+
+    function hasConsent(consentKey) {
+        if (state.consentRevalidationPending) {
+            return false;
+        }
+
+        if (window.App && window.App.config && window.App.config.global && !window.App.config.global.blockCookies) {
+            return true;
+        }
+
+        if (!window.ConsentManager) {
+            return false;
+        }
+
+        return !!window.ConsentManager.isConsented(consentKey);
+    }
+
+    function hasGoogleAnalyticsConsent() {
+        return hasConsent(config.googleAnalyticsConsentKey);
+    }
+
+    function hasMatomoConsent() {
+        return hasConsent(config.matomoConsentKey);
+    }
+
+    function hasAnalyticsConsent() {
+        return hasGoogleAnalyticsConsent() || hasMatomoConsent();
+    }
+
+    function hasMarketingConsent() {
+        return hasConsent(config.marketingConsentKey);
+    }
+
+    function hasAnyTrackingConsent() {
+        return hasAnalyticsConsent() || hasMarketingConsent();
+    }
+
+    function getConsentDebugState() {
+        var consents = null;
+        var hasResponse = false;
+
+        try {
+            consents = window.ConsentManager && window.ConsentManager.getConsents ? window.ConsentManager.getConsents() : null;
+        } catch (error) {
+            consents = { error: String(error && error.message || error) };
+        }
+
+        try {
+            hasResponse = !!(window.ConsentManager && window.ConsentManager.hasResponse && window.ConsentManager.hasResponse());
+        } catch (error) {
+            hasResponse = false;
+        }
+
+        return {
+            googleAnalyticsConsentKey: config.googleAnalyticsConsentKey,
+            matomoConsentKey: config.matomoConsentKey,
+            marketingConsentKey: config.marketingConsentKey,
+            googleAnalyticsConsent: hasGoogleAnalyticsConsent(),
+            matomoConsent: hasMatomoConsent(),
+            analyticsConsent: hasAnalyticsConsent(),
+            marketingConsent: hasMarketingConsent(),
+            anyTrackingConsent: hasAnyTrackingConsent(),
+            consentRevalidationPending: state.consentRevalidationPending,
+            consentManagerAvailable: !!window.ConsentManager,
+            consentManagerHasResponse: hasResponse,
+            consents: consents
+        };
+    }
+
+    function exposeDebugApi() {
+        window.CyroTracking = {
+            getStatus: function() {
+                return {
+                    config: assign({}, config),
+                    state: assign({}, state),
+                    consent: getConsentDebugState(),
+                    dataLayer: window.dataLayer || []
+                };
+            },
+            getConsent: getConsentDebugState
+        };
+    }
+
+    function initConsentRevalidation() {
+        if (!window.ConsentManager || !window.ConsentManager.hasResponse || !window.ConsentManager.setResponse) {
+            return;
+        }
+
+        if (getStoredValue(consentMigrationStorageKey) === consentMigrationVersion) {
+            return;
+        }
+
+        var hadResponse = false;
+
+        try {
+            hadResponse = !!window.ConsentManager.hasResponse();
+        } catch (error) {
+            log("consent migration check failed", error);
+        }
+
+        if (!hadResponse) {
+            setStoredValue(consentMigrationStorageKey, consentMigrationVersion);
+            return;
+        }
+
+        state.consentRevalidationPending = true;
+
+        var originalHasResponse = window.ConsentManager.hasResponse.bind(window.ConsentManager);
+        var originalSetResponse = window.ConsentManager.setResponse.bind(window.ConsentManager);
+
+        window.ConsentManager.hasResponse = function() {
+            return state.consentRevalidationPending ? false : originalHasResponse();
+        };
+
+        window.ConsentManager.setResponse = function() {
+            var result = originalSetResponse.apply(window.ConsentManager, arguments);
+
+            state.consentRevalidationPending = false;
+            setStoredValue(consentMigrationStorageKey, consentMigrationVersion);
+            window.ConsentManager.hasResponse = originalHasResponse;
+            window.ConsentManager.setResponse = originalSetResponse;
+            document.dispatchEvent(new CustomEvent("consent-change"));
+
+            return result;
+        };
+
+        log("forcing one-time consent revalidation", consentMigrationVersion);
+    }
+
+    function getStoredValue(key) {
+        try {
+            return window.localStorage ? window.localStorage.getItem(key) : "";
+        } catch (error) {
+            return "";
+        }
+    }
+
+    function setStoredValue(key, value) {
+        try {
+            if (window.localStorage) {
+                window.localStorage.setItem(key, value);
+            }
+        } catch (error) {
+            log("storage write failed", key, error);
+        }
+    }
+
+    function onConsent(callback) {
+        if (hasAnyTrackingConsent()) {
+            updateGoogleConsentMode();
+            callback();
+            return;
+        }
+
+        log("waiting for consent", config.googleAnalyticsConsentKey, config.matomoConsentKey, config.marketingConsentKey);
+
+        document.addEventListener("consent-change", function() {
+            if (hasAnyTrackingConsent()) {
+                updateGoogleConsentMode();
+                callback();
+            }
+        });
+    }
+
+    function eventId(name) {
+        return "cyro_" + name + "_" + Date.now() + "_" + Math.random().toString(16).slice(2);
+    }
+
+    function purchaseEventId(orderId) {
+        var normalizedOrderId = String(orderId || "")
+            .trim()
+            .replace(/[^A-Za-z0-9._:-]+/g, "_")
+            .slice(0, 100);
+
+        return normalizedOrderId ? "cyro_purchase_" + normalizedOrderId : eventId("purchase");
+    }
+
+    function purchaseStorageKey(orderId) {
+        return "cyro_tracking_purchase_" + purchaseEventId(orderId);
+    }
+
+    function hasTrackedPurchase(orderId) {
+        if (!orderId) {
+            return false;
+        }
+
+        try {
+            return !!(window.sessionStorage && window.sessionStorage.getItem(purchaseStorageKey(orderId)));
+        } catch (error) {
+            log("purchase storage read failed", error);
+            return false;
+        }
+    }
+
+    function markPurchaseTracked(orderId) {
+        if (!orderId) {
+            return;
+        }
+
+        try {
+            if (window.sessionStorage) {
+                window.sessionStorage.setItem(purchaseStorageKey(orderId), String(Date.now()));
+            }
+        } catch (error) {
+            log("purchase storage write failed", error);
+        }
+    }
+
+    function normalizeTrackingId(value) {
+        return value === null || typeof value === "undefined" ? "" : String(value).trim();
+    }
+
+    function normalizeMatomoSiteId(value) {
+        value = normalizeTrackingId(value);
+
+        return /^[0-9]+$/.test(value) ? value : "";
+    }
+
+    function normalizeMatomoUrl(value) {
+        value = normalizeTrackingId(value);
+
+        if (!value) {
+            return "";
+        }
+
+        if (!/^https?:\/\//i.test(value)) {
+            value = "https://" + value;
+        }
+
+        return value.replace(/\/+$/, "") + "/";
+    }
+
+    function pushDataLayer(eventName, ecommerce, extra) {
+        var payload = extra || {};
+        payload.event = eventName;
+
+        if (ecommerce) {
+            window.dataLayer.push({ ecommerce: null });
+            payload.ecommerce = ecommerce;
+        }
+
+        window.dataLayer.push(payload);
+        log("dataLayer", payload);
+    }
+
+    function loadScript(src, id) {
+        if (!src || document.getElementById(id)) {
+            return;
+        }
+
+        var firstScript = document.getElementsByTagName("script")[0];
+        var script = document.createElement("script");
+        script.async = true;
+        script.id = id;
+        script.src = src;
+        firstScript.parentNode.insertBefore(script, firstScript);
+    }
+
+    function ensureGtag() {
+        window.dataLayer = window.dataLayer || [];
+        if (window.gtag && window.gtag._cyroTracking) {
+            return;
+        }
+
+        window.gtag = function() {
+            window.dataLayer.push(arguments);
+        };
+        window.gtag._cyroTracking = true;
+    }
+
+    function initGoogleConsentMode() {
+        if (state.googleConsentModeInitialized) {
+            return;
+        }
+
+        state.googleConsentModeInitialized = true;
+        ensureGtag();
+        window.gtag("consent", "default", {
+            ad_storage: "denied",
+            ad_user_data: "denied",
+            ad_personalization: "denied",
+            analytics_storage: "denied",
+            wait_for_update: 500
+        });
+    }
+
+    function updateGoogleConsentMode() {
+        initGoogleConsentMode();
+
+        var analyticsGranted = hasGoogleAnalyticsConsent() ? "granted" : "denied";
+        var marketingGranted = hasMarketingConsent() ? "granted" : "denied";
+
+        window.gtag("consent", "update", {
+            analytics_storage: analyticsGranted,
+            ad_storage: marketingGranted,
+            ad_user_data: marketingGranted,
+            ad_personalization: marketingGranted
+        });
+
+        log("google consent", {
+            analytics_storage: analyticsGranted,
+            ad_storage: marketingGranted,
+            ad_user_data: marketingGranted,
+            ad_personalization: marketingGranted
+        });
+    }
+
+    function initGoogle() {
+        if (!hasGoogleAnalyticsConsent() || state.googleInitialized) {
+            return;
+        }
+
+        state.googleInitialized = true;
+        ensureGtag();
+        updateGoogleConsentMode();
+
+        if (config.ga4Id) {
+            var ga4Config = assign({
+                page_title: document.title,
+                page_location: window.location.href
+            }, getAttributionEventData());
+
+            if (config.debug) {
+                ga4Config.debug_mode = true;
+            }
+
+            loadScript("https://www.googletagmanager.com/gtag/js?id=" + encodeURIComponent(config.ga4Id), "cyro-ga4");
+            window.gtag("js", new Date());
+            window.gtag("config", config.ga4Id, ga4Config);
+            log("GA4 direct initialized", config.ga4Id, ga4Config);
+        } else {
+            log("GA4 measurement ID missing");
+        }
+    }
+
+    function initMatomo() {
+        if (!hasMatomoConsent() || state.matomoInitialized) {
+            return;
+        }
+
+        if (!config.matomoUrl || !config.matomoSiteId) {
+            log("Matomo URL or site ID missing");
+            return;
+        }
+
+        state.matomoInitialized = true;
+        window._paq = window._paq || [];
+        window._paq.push(["setTrackerUrl", config.matomoUrl + "matomo.php"]);
+        window._paq.push(["setSiteId", config.matomoSiteId]);
+
+        if (config.matomoEnableLinkTracking) {
+            window._paq.push(["enableLinkTracking"]);
+        }
+
+        loadScript(config.matomoUrl + "matomo.js", "cyro-matomo");
+        log("Matomo initialized", config.matomoUrl, config.matomoSiteId);
+    }
+
+    function initMeta() {
+        if (!hasMarketingConsent() || state.metaInitialized) {
+            return;
+        }
+
+        state.metaInitialized = true;
+
+        if (!config.metaPixelId || !config.sendMetaBrowser || window.fbq) {
+            return;
+        }
+
+        !function(f,b,e,v,n,t,s) {
+            if(f.fbq) return;
+            n=f.fbq=function(){n.callMethod?n.callMethod.apply(n,arguments):n.queue.push(arguments);};
+            if(!f._fbq) f._fbq=n;
+            n.push=n;
+            n.loaded=!0;
+            n.version="2.0";
+            n.queue=[];
+            t=b.createElement(e);
+            t.async=!0;
+            t.src=v;
+            s=b.getElementsByTagName(e)[0];
+            s.parentNode.insertBefore(t,s);
+        }(window, document, "script", "https://connect.facebook.net/en_US/fbevents.js");
+
+        window.fbq("init", config.metaPixelId);
+    }
+
+    function ga4Name(eventName) {
+        var map = {
+            page_view: "page_view",
+            view_item: "view_item",
+            add_to_cart: "add_to_cart",
+            begin_checkout: "begin_checkout",
+            purchase: "purchase",
+            search: "search"
+        };
+
+        return map[eventName] || eventName;
+    }
+
+    function metaName(eventName) {
+        var map = {
+            page_view: "PageView",
+            view_item: "ViewContent",
+            add_to_cart: "AddToCart",
+            begin_checkout: "InitiateCheckout",
+            purchase: "Purchase",
+            search: "Search"
+        };
+
+        return map[eventName] || eventName;
+    }
+
+    function trackMatomo(eventName, ecommerce, extra) {
+        if (!state.matomoInitialized || !window._paq) {
+            return;
+        }
+
+        ecommerce = ecommerce || {};
+        extra = extra || {};
+
+        if (eventName === "page_view") {
+            window._paq.push(["setCustomUrl", window.location.href]);
+            window._paq.push(["setDocumentTitle", document.title]);
+            window._paq.push(["trackPageView"]);
+            log("matomo page_view");
+            return;
+        }
+
+        if (eventName === "search") {
+            window._paq.push(["trackSiteSearch", ecommerce.search_term || extra.search_term || "", false, false]);
+            log("matomo search", ecommerce.search_term || extra.search_term || "");
+            return;
+        }
+
+        if (eventName === "view_item") {
+            trackMatomoViewItem(ecommerce.items || [], ecommerce.value);
+            return;
+        }
+
+        if (eventName === "add_to_cart") {
+            addMatomoEcommerceItems(ecommerce.items || []);
+            window._paq.push(["trackEcommerceCartUpdate", Number(ecommerce.value || 0)]);
+            window._paq.push(["trackEvent", "Ecommerce", "AddToCart", getMatomoItemsLabel(ecommerce.items || []), Number(ecommerce.value || 0)]);
+            log("matomo add_to_cart", ecommerce);
+            return;
+        }
+
+        if (eventName === "begin_checkout") {
+            addMatomoEcommerceItems(ecommerce.items || []);
+            window._paq.push(["trackEvent", "Ecommerce", "BeginCheckout", "Checkout", Number(ecommerce.value || 0)]);
+            log("matomo begin_checkout", ecommerce);
+            return;
+        }
+
+        if (eventName === "purchase") {
+            addMatomoEcommerceItems(ecommerce.items || []);
+            window._paq.push(["trackEcommerceOrder", ecommerce.transaction_id || "", Number(ecommerce.value || 0)]);
+            log("matomo purchase", ecommerce);
+        }
+    }
+
+    function trackMatomoViewItem(items, value) {
+        var item = items && items.length ? items[0] : null;
+
+        if (!item) {
+            return;
+        }
+
+        window._paq.push(["setEcommerceView", item.item_id, item.item_name || item.item_id, false, Number(item.price || value || 0)]);
+        window._paq.push(["trackEvent", "Ecommerce", "ViewItem", item.item_name || item.item_id, Number(item.price || value || 0)]);
+        log("matomo view_item", item);
+    }
+
+    function addMatomoEcommerceItems(items) {
+        window._paq.push(["clearEcommerceCart"]);
+
+        items.forEach(function(item) {
+            window._paq.push([
+                "addEcommerceItem",
+                item.item_id,
+                item.item_name || item.item_id,
+                false,
+                Number(item.price || 0),
+                Number(item.quantity || 1)
+            ]);
+        });
+    }
+
+    function getMatomoItemsLabel(items) {
+        return (items || []).map(function(item) {
+            return item.item_name || item.item_id;
+        }).join(", ");
+    }
+
+    function track(eventName, ecommerce, metaCustomData, extra, fixedEventId) {
+        var googleAnalyticsConsent = hasGoogleAnalyticsConsent();
+        var matomoConsent = hasMatomoConsent();
+        var marketingConsent = hasMarketingConsent();
+
+        if (!googleAnalyticsConsent && !matomoConsent && !marketingConsent) {
+            log("blocked", eventName);
+            return;
+        }
+
+        var id = fixedEventId || eventId(eventName);
+        var attribution = getAttributionEventData();
+
+        if (googleAnalyticsConsent) {
+            var dlExtra = assign({}, attribution, extra || {});
+            dlExtra.event_id = id;
+            pushDataLayer(eventName, ecommerce, dlExtra);
+
+            if (config.ga4Id && window.gtag && eventName !== "page_view") {
+                var ga4Payload = assign({}, attribution, ecommerce || {});
+                ga4Payload.send_to = config.ga4Id;
+
+                if (config.debug) {
+                    ga4Payload.debug_mode = true;
+                }
+
+                window.gtag("event", ga4Name(eventName), ga4Payload);
+                log("gtag", ga4Name(eventName), ga4Payload);
+            }
+        }
+
+        if (matomoConsent) {
+            trackMatomo(eventName, ecommerce || {}, extra || {});
+        }
+
+        if (marketingConsent && config.metaPixelId && config.sendMetaBrowser && window.fbq) {
+            window.fbq("track", metaName(eventName), assign({}, getMetaAttributionData(), metaCustomData || {}), { eventID: id });
+        }
+
+        if (marketingConsent && config.metaPixelId && config.sendMetaServer) {
+            sendMeta(eventName, id, metaCustomData || {});
+        }
+    }
+
+    function sendMeta(eventName, id, customData) {
+        if (!canHashCustomerData(eventName)) {
+            sendMetaRequest(eventName, id, customData, {});
+            return;
+        }
+
+        buildMetaHashedUserData(eventName).then(function(userData) {
+            sendMetaRequest(eventName, id, customData, userData);
+        }, function(error) {
+            log("meta customer data hashing failed", error);
+            sendMetaRequest(eventName, id, customData, {});
+        });
+    }
+
+    function sendMetaRequest(eventName, id, customData, userData) {
+        var headers = { "Content-Type": "application/x-www-form-urlencoded; charset=UTF-8" };
+        var csrfToken = document.getElementById("csrf-token");
+
+        if (csrfToken && csrfToken.value) {
+            headers["X-CSRF-TOKEN"] = csrfToken.value;
+        }
+
+        var body = new URLSearchParams();
+        body.set("consent", hasMarketingConsent() ? "1" : "0");
+        body.set("event_name", metaName(eventName));
+        body.set("event_id", id);
+        body.set("event_source_url", getMetaEventSourceUrl());
+        body.set("referrer_url", getMetaReferrerUrl());
+        body.set("fbp", getCookie("_fbp"));
+        body.set("fbc", getCookie("_fbc") || getAttributionFbc());
+        body.set("custom_data", JSON.stringify(assign({}, getMetaAttributionData(), customData || {})));
+
+        if (userData && Object.keys(userData).length) {
+            body.set("user_data", JSON.stringify(userData));
+        }
+
+        fetch(config.serverEndpoint, {
+            method: "POST",
+            credentials: "same-origin",
+            headers: headers,
+            body: body.toString()
+        }).catch(function(error) {
+            log("meta server failed", error);
+        });
+    }
+
+    function canHashCustomerData(eventName) {
+        return !!(
+            config.sendMetaHashedCustomerData &&
+            (eventName === "begin_checkout" || eventName === "purchase") &&
+            window.Promise &&
+            window.crypto &&
+            window.crypto.subtle &&
+            window.TextEncoder
+        );
+    }
+
+    function buildMetaHashedUserData(eventName) {
+        var source = getCustomerIdentifierSource(eventName);
+        var normalized = {
+            em: normalizeEmail(source.email),
+            ph: normalizePhone(source.phone),
+            fn: normalizeName(source.first_name),
+            ln: normalizeName(source.last_name),
+            external_id: normalizeExternalId(source.external_id)
+        };
+        var keys = Object.keys(normalized).filter(function(key) {
+            return normalized[key] !== "";
+        });
+        var userData = {};
+
+        return Promise.all(keys.map(function(key) {
+            return sha256Hex(normalized[key]).then(function(hash) {
+                userData[key] = hash;
+            });
+        })).then(function() {
+            return userData;
+        });
+    }
+
+    function getCustomerIdentifierSource(eventName) {
+        var customer = {};
+        var address = getCustomerAddress();
+        var user = getCeresUserData();
+
+        if (config.order && config.order.customer) {
+            assign(customer, config.order.customer);
+        }
+
+        fillMissingCustomerField(customer, "email", address.email || getUserEmail(user));
+        fillMissingCustomerField(customer, "phone", address.telephone || address.phone || address.mobile || "");
+        fillMissingCustomerField(customer, "first_name", address.name2 || user.firstName || "");
+        fillMissingCustomerField(customer, "last_name", address.name3 || user.lastName || "");
+        fillMissingCustomerField(customer, "external_id", user.id || user.contactId || "");
+
+        log("meta hashed customer source", eventName, {
+            hasEmail: !!customer.email,
+            hasPhone: !!customer.phone,
+            hasFirstName: !!customer.first_name,
+            hasLastName: !!customer.last_name,
+            hasExternalId: !!customer.external_id
+        });
+
+        return customer;
+    }
+
+    function fillMissingCustomerField(customer, key, value) {
+        if (!customer[key] && value) {
+            customer[key] = value;
+        }
+    }
+
+    function getCustomerAddress() {
+        var state = window.ceresStore && window.ceresStore.state || {};
+        var addressState = state.address || {};
+
+        return addressState.billingAddress || addressState.deliveryAddress || {};
+    }
+
+    function getCeresUserData() {
+        var state = window.ceresStore && window.ceresStore.state || {};
+        var userState = state.user || {};
+
+        return userState.userData || {};
+    }
+
+    function getUserEmail(user) {
+        var options = user && user.options || [];
+
+        if (user && user.email) {
+            return user.email;
+        }
+
+        for (var i = 0; i < options.length; i++) {
+            if (options[i] && String(options[i].value || "").indexOf("@") > 0) {
+                return options[i].value;
+            }
+        }
+
+        return "";
+    }
+
+    function normalizeEmail(value) {
+        return cleanCustomerString(value).toLowerCase();
+    }
+
+    function normalizePhone(value) {
+        return cleanCustomerString(value).replace(/[^0-9]/g, "");
+    }
+
+    function normalizeName(value) {
+        return cleanCustomerString(value).toLowerCase().replace(/\s+/g, "");
+    }
+
+    function normalizeExternalId(value) {
+        return cleanCustomerString(value).toLowerCase();
+    }
+
+    function cleanCustomerString(value) {
+        return value === null || typeof value === "undefined" ? "" : String(value).trim();
+    }
+
+    function sha256Hex(value) {
+        return window.crypto.subtle.digest("SHA-256", new window.TextEncoder().encode(value)).then(function(buffer) {
+            var bytes = new Uint8Array(buffer);
+            var hex = "";
+
+            for (var i = 0; i < bytes.length; i++) {
+                hex += ("00" + bytes[i].toString(16)).slice(-2);
+            }
+
+            return hex;
+        });
+    }
+
+    function getCookie(name) {
+        var match = document.cookie.match(new RegExp("(?:^|; )" + name.replace(/([.$?*|{}()[\]\\/+^])/g, "\\$1") + "=([^;]*)"));
+        return match ? decodeURIComponent(match[1]) : "";
+    }
+
+    function assign(target) {
+        target = target || {};
+
+        for (var i = 1; i < arguments.length; i++) {
+            var source = arguments[i] || {};
+
+            for (var key in source) {
+                if (Object.prototype.hasOwnProperty.call(source, key)) {
+                    target[key] = source[key];
+                }
+            }
+        }
+
+        return target;
+    }
+
+    function initAttribution() {
+        var initial = state.attribution || {};
+        var stored = readAttribution();
+        var current = getAttributionFromUrl();
+
+        state.attribution = assign({}, stored, initial, current);
+
+        if (Object.keys(state.attribution).length) {
+            state.attribution.landing_page = state.attribution.landing_page || window.location.href;
+            state.attribution.referrer = state.attribution.referrer || document.referrer || "";
+            state.attribution.captured_at = state.attribution.captured_at || String(Date.now());
+            writeAttribution(state.attribution);
+            log("attribution", state.attribution);
+        }
+    }
+
+    function getAttributionFromUrl() {
+        var params = new URLSearchParams(window.location.search);
+        var data = {};
+
+        attributionParams.forEach(function(name) {
+            var value = params.get(name);
+
+            if (value) {
+                data[name] = value.substring(0, 500);
+            }
+        });
+
+        if (Object.keys(data).length) {
+            data.landing_page = window.location.href;
+            data.referrer = document.referrer || "";
+            data.captured_at = String(Date.now());
+        }
+
+        return data;
+    }
+
+    function getMetaAttributionData() {
+        var source = state.attribution || {};
+        var data = {};
+
+        attributionParams.forEach(function(name) {
+            if (source[name]) {
+                data[name] = source[name];
+            }
+        });
+
+        if (source.landing_page) {
+            data.landing_page = source.landing_page;
+        }
+
+        if (source.referrer) {
+            data.original_referrer = source.referrer;
+        }
+
+        return data;
+    }
+
+    function getMetaEventSourceUrl() {
+        return window.location.href;
+    }
+
+    function getMetaReferrerUrl() {
+        return document.referrer || getOriginalReferrer();
+    }
+
+    function getOriginalReferrer() {
+        return state.attribution && state.attribution.referrer || document.referrer || "";
+    }
+
+    function readAttribution() {
+        var stored = readAttributionFromStorage(getStorage("localStorage"));
+
+        if (Object.keys(stored).length) {
+            return stored;
+        }
+
+        return readAttributionFromStorage(getStorage("sessionStorage"));
+    }
+
+    function getStorage(name) {
+        try {
+            return window[name] || null;
+        } catch (error) {
+            log("storage unavailable", name, error);
+            return null;
+        }
+    }
+
+    function readAttributionFromStorage(storage) {
+        try {
+            var value = storage && storage.getItem(attributionStorageKey);
+            var parsed = value ? JSON.parse(value) : {};
+
+            if (!parsed || typeof parsed !== "object") {
+                return {};
+            }
+
+            if (parsed.expires_at && Number(parsed.expires_at) < Date.now()) {
+                storage.removeItem(attributionStorageKey);
+                return {};
+            }
+
+            return parsed;
+        } catch (error) {
+            log("attribution read failed", error);
+            return {};
+        }
+    }
+
+    function writeAttribution(data) {
+        var payload = assign({}, data || {});
+        var capturedAt = Number(payload.captured_at) || Date.now();
+
+        payload.expires_at = String(capturedAt + attributionStorageTtlMs);
+
+        try {
+            var local = getStorage("localStorage");
+            var session = getStorage("sessionStorage");
+
+            if (local) {
+                local.setItem(attributionStorageKey, JSON.stringify(payload));
+            }
+
+            if (session) {
+                session.setItem(attributionStorageKey, JSON.stringify(payload));
+            }
+        } catch (error) {
+            log("attribution write failed", error);
+        }
+    }
+
+    function getAttributionEventData() {
+        var source = state.attribution || {};
+        var data = {};
+
+        attributionParams.forEach(function(name) {
+            if (source[name]) {
+                data[name] = source[name];
+            }
+        });
+
+        if (source.landing_page) {
+            data.landing_page = source.landing_page;
+        }
+
+        if (source.referrer) {
+            data.original_referrer = source.referrer;
+        }
+
+        if (source.utm_source) {
+            data.source = source.utm_source;
+        }
+
+        if (source.utm_medium) {
+            data.medium = source.utm_medium;
+        }
+
+        if (source.utm_campaign) {
+            data.campaign = source.utm_campaign;
+        }
+
+        if (source.utm_id) {
+            data.campaign_id = source.utm_id;
+        }
+
+        if (source.utm_term) {
+            data.term = source.utm_term;
+        }
+
+        if (source.utm_content) {
+            data.content = source.utm_content;
+        }
+
+        return data;
+    }
+
+    function getAttributionFbc() {
+        var fbclid = state.attribution && state.attribution.fbclid;
+
+        if (!fbclid) {
+            return "";
+        }
+
+        return "fb.1." + String(state.attribution.captured_at || Date.now()) + "." + fbclid;
+    }
+
+    function getBasket() {
+        if (window.ceresStore && window.ceresStore.state) {
+            return window.ceresStore.state.basket || window.ceresStore.state.checkout || {};
+        }
+
+        return {};
+    }
+
+    function getItemsFromBasket() {
+        var basket = getBasket();
+        var items = basket.items || basket.basketItems || [];
+
+        return items.map(mapBasketItem).filter(function(item) {
+            return item && item.item_id !== "";
+        });
+    }
+
+    function mapBasketItem(item) {
+        if (!item) {
+            return null;
+        }
+
+        var variationData = item.variation && item.variation.data || item.variationData && item.variationData.data || item.data || {};
+        var variation = variationData.variation || item.variation || {};
+        var id = item.variationId || variation.id || item.id || "";
+        var quantity = Number(item.quantity || item.qty || 1);
+        var price = Number(item.price || variationData.prices && variationData.prices.default && variationData.prices.default.price && variationData.prices.default.price.value || 0);
+
+        return {
+            item_id: String(id),
+            item_name: getItemName(variationData, id),
+            quantity: quantity,
+            price: price
+        };
+    }
+
+    function mapVariationData(data, quantity) {
+        data = data || {};
+
+        var variation = data.variation || {};
+        var defaultPrice = data.prices && data.prices.default || {};
+        var price = defaultPrice.price && defaultPrice.price.value || defaultPrice.unitPrice && defaultPrice.unitPrice.value || 0;
+        var id = variation.id || data.id || "";
+
+        return {
+            item_id: String(id),
+            item_name: getItemName(data, id),
+            quantity: Number(quantity || 1),
+            price: Number(price || 0)
+        };
+    }
+
+    function getItemName(data, fallback) {
+        var texts = data && data.texts || {};
+        var variation = data && data.variation || {};
+
+        return String(texts.name1 || texts.name2 || texts.name3 || variation.name || fallback || "");
+    }
+
+    function getCurrency() {
+        if (config.order && isIsoCurrency(config.order.currency)) {
+            return config.order.currency.toUpperCase();
+        }
+
+        return normalizeCurrency(config.currency);
+    }
+
+    function normalizeCurrency(value) {
+        value = String(value || "").toUpperCase();
+
+        return isIsoCurrency(value) ? value : "EUR";
+    }
+
+    function isIsoCurrency(value) {
+        return /^[A-Z]{3}$/.test(String(value || ""));
+    }
+
+    function getBasketValue(items) {
+        return items.reduce(function(sum, item) {
+            return sum + (Number(item.price || 0) * Number(item.quantity || 1));
+        }, 0);
+    }
+
+    function metaCommerce(items, value, extra) {
+        var data = extra || {};
+        data.currency = getCurrency();
+        data.value = Number(value || 0);
+        data.content_type = "product";
+        data.content_ids = items.map(function(item) { return item.item_id; });
+        data.contents = items.map(function(item) {
+            return { id: item.item_id, quantity: item.quantity, item_price: item.price };
+        });
+        data.num_items = items.reduce(function(sum, item) { return sum + Number(item.quantity || 1); }, 0);
+        return data;
+    }
+
+    function trackPageView() {
+        if (state.pageViewSent) {
+            return;
+        }
+
+        state.pageViewSent = true;
+        track("page_view", {
+            page_title: document.title,
+            page_location: window.location.href
+        }, {});
+    }
+
+    function trackSearch() {
+        var params = new URLSearchParams(window.location.search);
+        var query = params.get("query") || params.get("q") || params.get("search") || "";
+
+        if (!query || query === state.lastSearch) {
+            return;
+        }
+
+        state.lastSearch = query;
+        track("search", { search_term: query }, { search_string: query });
+    }
+
+    function trackViewItem(attempt) {
+        if (!window.App || !window.App.isItemView) {
+            return;
+        }
+
+        if (state.viewItemSent) {
+            return;
+        }
+
+        var currentVariation = window.ceresStore && window.ceresStore.getters && window.ceresStore.getters.currentItemVariation;
+
+        if (!currentVariation) {
+            if ((attempt || 0) < 20) {
+                setTimeout(function() {
+                    trackViewItem((attempt || 0) + 1);
+                }, 250);
+            }
+            return;
+        }
+
+        state.viewItemSent = true;
+        var item = mapVariationData(currentVariation, 1);
+        var items = [item];
+        var price = item.price;
+
+        track("view_item", {
+            currency: getCurrency(),
+            value: price,
+            items: items
+        }, metaCommerce(items, price));
+    }
+
+    function trackCheckout(attempt) {
+        if (!window.App || !window.App.isCheckoutView || state.checkoutSent) {
+            return;
+        }
+
+        var items = getItemsFromBasket();
+        if (!items.length) {
+            if ((attempt || 0) < 20) {
+                setTimeout(function() {
+                    trackCheckout((attempt || 0) + 1);
+                }, 500);
+            }
+            return;
+        }
+
+        var value = getBasketValue(items);
+        state.checkoutSent = true;
+        track("begin_checkout", {
+            currency: getCurrency(),
+            value: value,
+            items: items
+        }, metaCommerce(items, value));
+    }
+
+    function getCartSignature() {
+        var items = getItemsFromBasket();
+        return items.map(function(item) {
+            return item.item_id + ":" + item.quantity;
+        }).join("|");
+    }
+
+    function trackAddToCart(detail, force) {
+        var items = [];
+        var now = Date.now();
+
+        if (force && now - state.lastAddToCartAt < 1000) {
+            return;
+        }
+
+        if (force) {
+            state.lastAddToCartAt = now;
+        }
+
+        if (detail && detail.variationId) {
+            var basketItems = getItemsFromBasket();
+            var basketItem = basketItems.find(function(item) {
+                return String(item.item_id) === String(detail.variationId);
+            });
+            var currentVariation = window.ceresStore && window.ceresStore.getters && window.ceresStore.getters.currentItemVariation;
+
+            if (basketItem) {
+                items = [basketItem];
+            } else if (currentVariation && currentVariation.variation && String(currentVariation.variation.id) === String(detail.variationId)) {
+                items = [mapVariationData(currentVariation, detail.quantity)];
+            } else {
+                items = [{ item_id: String(detail.variationId), item_name: String(detail.variationId), quantity: Number(detail.quantity || 1), price: 0 }];
+            }
+        }
+
+        if (!items.length) {
+            items = getItemsFromBasket();
+        }
+
+        var signature = items.map(function(item) {
+            return item.item_id + ":" + item.quantity;
+        }).join("|");
+
+        if (!signature || (!force && signature === state.lastCartSignature)) {
+            return;
+        }
+
+        var value = getBasketValue(items);
+        track("add_to_cart", {
+            currency: getCurrency(),
+            value: value,
+            items: items
+        }, metaCommerce(items, value));
+        state.lastCartSignature = signature;
+    }
+
+    function trackPurchase() {
+        if (!window.App || window.App.templateEvent !== "tpl.confirmation") {
+            return;
+        }
+
+        var orderId = config.order && config.order.order_id || findText(["order-id", "orderId", "order-number"]);
+        var purchaseKey = orderId || window.location.pathname;
+
+        if (state.purchaseKeys[purchaseKey] || hasTrackedPurchase(orderId)) {
+            return;
+        }
+
+        state.purchaseKeys[purchaseKey] = true;
+        var items = config.order && config.order.items && config.order.items.length ? config.order.items : getItemsFromBasket();
+        var value = config.order && config.order.value ? Number(config.order.value) : getBasketValue(items);
+        track("purchase", {
+            transaction_id: purchaseKey,
+            currency: getCurrency(),
+            value: value,
+            items: items
+        }, metaCommerce(items, value, { order_id: purchaseKey }), {}, purchaseEventId(orderId));
+
+        if (hasMarketingConsent() && config.metaPixelId && (config.sendMetaBrowser || config.sendMetaServer)) {
+            markPurchaseTracked(orderId);
+        }
+    }
+
+    function findText(keys) {
+        for (var i = 0; i < keys.length; i++) {
+            var node = document.querySelector("[data-" + keys[i] + "]");
+            if (node) {
+                return node.getAttribute("data-" + keys[i] + "") || node.textContent.trim();
+            }
+        }
+
+        return "";
+    }
+
+    function bindStoreWatcher(attempt) {
+        if (!window.ceresStore || !window.ceresStore.subscribe) {
+            if ((attempt || 0) < 20) {
+                setTimeout(function() {
+                    bindStoreWatcher((attempt || 0) + 1);
+                }, 250);
+            }
+            return;
+        }
+
+        window.ceresStore.subscribe(function(mutation) {
+            var type = mutation && mutation.type || "";
+            if (type === "addBasketItem") {
+                setTimeout(function() {
+                    trackAddToCart(null, true);
+                }, 0);
+            } else if (type.toLowerCase().indexOf("basket") >= 0 || type.toLowerCase().indexOf("cart") >= 0) {
+                state.lastCartSignature = getCartSignature();
+            }
+        });
+    }
+
+    function bindDomFallbacks() {
+        document.addEventListener("afterBasketItemAdded", function(event) {
+            setTimeout(function() {
+                trackAddToCart(event.detail || null, true);
+            }, 800);
+        });
+
+        document.addEventListener("click", function(event) {
+            if (!event.target || !event.target.closest) {
+                return;
+            }
+
+            var target = event.target.closest("[data-testing='add-to-basket'], .add-to-basket-container button, button[name='addToBasket']");
+            if (target) {
+                setTimeout(function() {
+                    if (Date.now() - state.lastAddToCartAt >= 2000) {
+                        trackAddToCart(null, false);
+                    }
+                }, 1200);
+            }
+        }, true);
+    }
+
+    function initTracking() {
+        initAttribution();
+        initGoogle();
+        initMatomo();
+        initMeta();
+
+        if (state.initialized) {
+            return;
+        }
+
+        state.initialized = true;
+        bindStoreWatcher();
+        bindDomFallbacks();
+        trackPageView();
+        trackSearch();
+        setTimeout(function() {
+            trackViewItem(0);
+        }, 250);
+        setTimeout(function() {
+            trackCheckout(0);
+        }, 750);
+        setTimeout(trackPurchase, 750);
+        setTimeout(function() {
+            state.lastCartSignature = getCartSignature();
+        }, 500);
+    }
+
+    state.attribution = getAttributionFromUrl();
+    exposeDebugApi();
+    initGoogleConsentMode();
+    initConsentRevalidation();
+    onConsent(initTracking);
+})(window, document);
+</script>
+{% endif %}
